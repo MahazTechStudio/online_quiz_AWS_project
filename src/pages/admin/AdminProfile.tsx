@@ -202,7 +202,7 @@ const AdminProfile = () => {
                       Joined
                     </p>
                     <p className="text-sm text-dark-800">
-                      {formatDate(displayUser.createdAt)}
+                      {displayUser.createdAt ? formatDate(displayUser.createdAt) : "—"}
                     </p>
                   </div>
                 </div>
@@ -264,7 +264,14 @@ const AdminProfile = () => {
                       Joined Date
                     </label>
                   </div>
-                  <Input value={formatDate(displayUser.createdAt)} disabled />
+                  <Input
+                    value={
+                      displayUser.createdAt
+                        ? formatDate(displayUser.createdAt)
+                        : "—"
+                    }
+                    disabled
+                  />
                 </div>
               </div>
             </CardBody>

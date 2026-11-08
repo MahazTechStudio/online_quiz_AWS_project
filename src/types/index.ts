@@ -21,7 +21,16 @@ export interface User {
   role: Role;
   studentId?: string;
   avatar?: string;
-  createdAt: string;
+  createdAt?: string; // Made optional for login mock object compatibility
+}
+
+export interface Question {
+  id: string;
+  quizId: string;
+  text: string;
+  options: string[];
+  correctOption: number;
+  explanation?: string;
 }
 
 export interface Quiz {
@@ -35,15 +44,7 @@ export interface Quiz {
   questionCount: number;
   status: QuizStatus;
   createdAt: string;
-}
-
-export interface Question {
-  id: string;
-  quizId: string;
-  text: string;
-  options: string[];
-  correctOption: number;
-  explanation?: string;
+  questions?: Question[]; // Added to match api.ts getQuizQuestions usage
 }
 
 export interface QuizAttempt {

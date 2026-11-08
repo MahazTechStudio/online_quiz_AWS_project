@@ -9,64 +9,26 @@ import type {
   Difficulty,
   QuizStatus,
 } from '@/types';
-import {
-  mockUsers,
-  mockQuizzes,
-  mockQuestions,
-  mockQuizAttempts,
-} from '@/data/mockData';
 
-let users: User[] = [...mockUsers];
-let quizzes: Quiz[] = [...mockQuizzes];
-let questions: Question[] = [...mockQuestions];
-let quizAttempts: QuizAttempt[] = loadAttemptsFromStorage();
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
 
-function loadAttemptsFromStorage(): QuizAttempt[] {
-  if (typeof window === 'undefined') return [...mockQuizAttempts];
-  try {
-    const stored = localStorage.getItem('qc_attempts');
-    if (stored) {
-      return JSON.parse(stored) as QuizAttempt[];
-    }
-  } catch {
-    // ignore parse errors
-  }
-  return [...mockQuizAttempts];
-}
-
-function persistAttemptsToStorage(): void {
-  if (typeof window === 'undefined') return;
-  try {
-    localStorage.setItem('qc_attempts', JSON.stringify(quizAttempts));
-  } catch {
-    // ignore storage errors
-  }
-}
-
-async function delay(): Promise<void> {
-  const ms = 500 + Math.random() * 400;
-  await new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function newId(prefix: string): string {
-  return `${prefix}${Date.now()}`;
-}
+// ---------------------------------------------------------------------------
+// AUTHENTICATION & LOCAL STORAGE HELPERS
+// ---------------------------------------------------------------------------
 
 export async function login(
   email: string,
   password: string,
 ): Promise<{ user: User; token: string }> {
-  await delay();
-
-  const validEmails = ['student@university.edu', 'admin@university.edu'];
   const normalizedEmail = email.trim().toLowerCase();
 
-  if (!validEmails.includes(normalizedEmail) || password !== 'password123') {
-    throw new Error('Invalid email or password');
-  }
+  const mockUsers: User[] = [
+    { id: 'u1', name: 'Student User', email: 'student@university.edu', role: 'student' },
+    { id: 'u2', name: 'Admin User', email: 'admin@university.edu', role: 'admin' },
+  ];
 
-  const user = users.find((u) => u.email.toLowerCase() === normalizedEmail);
-  if (!user) {
+  const user = mockUsers.find((u) => u.email.toLowerCase() === normalizedEmail);
+  if (!user || password !== 'password123') {
     throw new Error('Invalid email or password');
   }
 
@@ -81,8 +43,6 @@ export async function login(
 }
 
 export async function getMe(): Promise<User | null> {
-  await delay();
-
   if (typeof window === 'undefined') return null;
   try {
     const userJson = localStorage.getItem('qc_user');
@@ -95,56 +55,70 @@ export async function getMe(): Promise<User | null> {
 }
 
 export async function logout(): Promise<void> {
-  await delay();
-
   if (typeof window !== 'undefined') {
     localStorage.removeItem('qc_user');
     localStorage.removeItem('qc_token');
   }
 }
 
-export async function getDashboardStats(userId: string): Promise<DashboardStats> {
-  await delay();
-
-  const completedSet = new Set(
-    quizAttempts
-      .filter((a) => a.userId === userId && a.status === 'completed')
-      .map((a) => a.quizId),
-  );
-
-  const published = quizzes.filter((q) => q.status === 'published');
-  const available = published.filter((q) => !completedSet.has(q.id)).length;
-  const completed = completedSet.size;
-
-  const userAttempts = quizAttempts.filter(
-    (a) => a.userId === userId && a.status === 'completed',
-  );
-  const avgScore =
-    userAttempts.length > 0
-      ? Math.round(
-          (userAttempts.reduce((sum, a) => sum + a.percentage, 0) /
-            userAttempts.length) *
-            10,
-        ) / 10
-      : 0;
-
+// Helper to normalize backend DynamoDB quiz payload to match frontend Quiz interface
+function normalizeQuiz(raw: any): Quiz {
   return {
-    available,
-    completed,
-    avgScore,
-    upcoming: 0,
+    id: raw.id || raw.quizId || `q-${Date.now()}`,
+    title: raw.title || 'Untitled Quiz',
+    description: raw.description || '',
+    category: (raw.category || 'General') as Category,
+    difficulty: (raw.difficulty || 'Beginner') as Difficulty,
+    durationMins: typeof raw.timeLimit === 'number' ? raw.timeLimit : raw.durationMins || 30,
+    attemptsAllowed: raw.attemptsAllowed || 1,
+    questionCount: Array.isArray(raw.questions) ? raw.questions.length : raw.questionCount || 0,
+    status: (raw.status || 'published') as QuizStatus,
+    createdAt: raw.createdAt || new Date().toISOString(),
+    // Standardize question property names
+    questions: Array.isArray(raw.questions)
+      ? raw.questions.map((q: any, index: number) => ({
+        id: q.id || `q-${index}`,
+        quizId: raw.id || raw.quizId,
+        text: q.text || q.questionText || '',
+        options: q.options || [],
+        correctOption: typeof q.correctOption === 'number' ? q.correctOption : q.correctAnswer || 0,
+        explanation: q.explanation || '',
+      }))
+      : [],
   };
 }
 
+// ---------------------------------------------------------------------------
+// AWS LAMBDA & DYNAMODB API INTEGRATION
+// ---------------------------------------------------------------------------
+
+// GET /quizzes -> Fetches list of quizzes from DynamoDB via Lambda
 export async function getAvailableQuizzes(_userId: string): Promise<Quiz[]> {
-  await delay();
+  const response = await fetch(`${API_BASE_URL}/quizzes`);
+  if (!response.ok) {
+    throw new Error(`Failed to fetch quizzes: ${response.statusText}`);
+  }
+  const rawData = await response.json();
+  const quizzes: Quiz[] = Array.isArray(rawData) ? rawData.map(normalizeQuiz) : [];
   return quizzes
     .filter((q) => q.status === 'published')
     .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 }
 
+export async function getAllQuizzes(): Promise<Quiz[]> {
+  const response = await fetch(`${API_BASE_URL}/quizzes`);
+  if (!response.ok) {
+    throw new Error(`Failed to fetch quizzes: ${response.statusText}`);
+  }
+  const rawData = await response.json();
+  const quizzes: Quiz[] = Array.isArray(rawData) ? rawData.map(normalizeQuiz) : [];
+  return quizzes.sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+  );
+}
+
 export async function getQuizById(id: string): Promise<Quiz> {
-  await delay();
+  const quizzes = await getAllQuizzes();
   const quiz = quizzes.find((q) => q.id === id);
   if (!quiz) {
     throw new Error('Quiz not found.');
@@ -153,25 +127,22 @@ export async function getQuizById(id: string): Promise<Quiz> {
 }
 
 export async function getQuizQuestions(quizId: string): Promise<Question[]> {
-  await delay();
-  return questions
-    .filter((q) => q.quizId === quizId)
-    .sort((a, b) => a.id.localeCompare(b.id));
+  const quiz = await getQuizById(quizId);
+  return quiz.questions || [];
 }
 
+// POST /results -> Saves student quiz result into DynamoDB via Lambda
 export async function submitQuizAttempt(
   userId: string,
   quizId: string,
   answers: Record<string, number>,
   timeTakenSecs: number,
 ): Promise<QuizAttempt> {
-  await delay();
-
-  const quizQuestions = questions.filter((q) => q.quizId === quizId);
+  const questions = await getQuizQuestions(quizId);
   let score = 0;
-  const total = quizQuestions.length;
+  const total = questions.length;
 
-  for (const question of quizQuestions) {
+  for (const question of questions) {
     const selectedOption = answers[question.id];
     if (selectedOption === question.correctOption) {
       score += 1;
@@ -181,10 +152,10 @@ export async function submitQuizAttempt(
   const percentage = total > 0 ? Math.round((score / total) * 100) : 0;
 
   const attempt: QuizAttempt = {
-    id: newId('a'),
+    id: `a${Date.now()}`,
     userId,
     quizId,
-    answers: { ...answers },
+    answers,
     score,
     total,
     percentage,
@@ -193,45 +164,117 @@ export async function submitQuizAttempt(
     submittedAt: new Date().toISOString(),
   };
 
-  quizAttempts.push(attempt);
-  persistAttemptsToStorage();
+  const response = await fetch(`${API_BASE_URL}/results`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(attempt),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to save quiz results: ${response.statusText}`);
+  }
 
   return attempt;
 }
 
 export async function getStudentResults(userId: string): Promise<QuizAttempt[]> {
-  await delay();
-  return quizAttempts
+  const response = await fetch(`${API_BASE_URL}/results`);
+  if (!response.ok) {
+    return [];
+  }
+  const attempts: QuizAttempt[] = await response.json();
+  return (Array.isArray(attempts) ? attempts : [])
     .filter((a) => a.userId === userId)
-    .sort(
-      (a, b) =>
-        new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime(),
-    );
+    .sort((a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime());
 }
 
 export async function getAttemptById(id: string): Promise<QuizAttempt> {
-  await delay();
-  const attempt = quizAttempts.find((a) => a.id === id);
+  const response = await fetch(`${API_BASE_URL}/results`);
+  if (!response.ok) {
+    throw new Error('Failed to fetch results.');
+  }
+  const attempts: QuizAttempt[] = await response.json();
+  const attempt = (Array.isArray(attempts) ? attempts : []).find((a) => a.id === id);
   if (!attempt) {
     throw new Error('Attempt not found.');
   }
   return attempt;
 }
 
-export async function getAllQuizzes(): Promise<Quiz[]> {
-  await delay();
-  return [...quizzes].sort(
-    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+export async function getAllResults(): Promise<QuizAttempt[]> {
+  const response = await fetch(`${API_BASE_URL}/results`);
+  if (!response.ok) {
+    return [];
+  }
+  const attempts: QuizAttempt[] = await response.json();
+  return (Array.isArray(attempts) ? attempts : []).sort(
+    (a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime(),
   );
 }
+
+export async function getDashboardStats(userId: string): Promise<DashboardStats> {
+  const attempts = await getStudentResults(userId);
+  const quizzes = await getAvailableQuizzes(userId);
+
+  const completedSet = new Set(
+    attempts.filter((a) => a.status === 'completed').map((a) => a.quizId),
+  );
+
+  const available = quizzes.filter((q) => !completedSet.has(q.id)).length;
+  const completed = completedSet.size;
+
+  const completedAttempts = attempts.filter((a) => a.status === 'completed');
+  const avgScore =
+    completedAttempts.length > 0
+      ? Math.round(
+        (completedAttempts.reduce((sum, a) => sum + a.percentage, 0) /
+          completedAttempts.length) *
+        10,
+      ) / 10
+      : 0;
+
+  return { available, completed, avgScore, upcoming: 0 };
+}
+
+export async function getAdminDashboardStats(): Promise<AdminDashboardStats> {
+  const quizzes = await getAllQuizzes();
+  const attempts = await getAllResults();
+
+  const totalQuizzes = quizzes.length;
+  const publishedQuizzes = quizzes.filter((q) => q.status === 'published').length;
+  const totalAttempts = attempts.length;
+
+  const completedAttempts = attempts.filter((a) => a.status === 'completed');
+  const avgScore =
+    completedAttempts.length > 0
+      ? Math.round(
+        (completedAttempts.reduce((sum, a) => sum + a.percentage, 0) /
+          completedAttempts.length) *
+        10,
+      ) / 10
+      : 0;
+
+  return {
+    totalQuizzes,
+    publishedQuizzes,
+    totalAttempts,
+    avgScore,
+    recentActivity: [],
+    weeklyAttempts: [0, 0, 0, 0, 0, 0, totalAttempts],
+  };
+}
+
+// ---------------------------------------------------------------------------
+// ADMIN WRITE OPERATIONS
+// ---------------------------------------------------------------------------
 
 export async function createQuiz(
   data: Partial<Quiz> & { title: string; category: Category },
 ): Promise<Quiz> {
-  await delay();
-
   const quiz: Quiz = {
-    id: newId('q'),
+    id: `q${Date.now()}`,
     title: data.title,
     description: data.description ?? '',
     category: data.category,
@@ -241,197 +284,28 @@ export async function createQuiz(
     questionCount: data.questionCount ?? 0,
     status: (data.status ?? 'draft') as QuizStatus,
     createdAt: new Date().toISOString(),
+    questions: [],
   };
-
-  quizzes.push(quiz);
   return quiz;
 }
 
-export async function updateQuiz(
-  id: string,
-  patch: Partial<Quiz>,
-): Promise<Quiz> {
-  await delay();
-
-  const index = quizzes.findIndex((q) => q.id === id);
-  if (index === -1) {
-    throw new Error('Quiz not found.');
-  }
-
-  quizzes[index] = { ...quizzes[index], ...patch, id: quizzes[index].id };
-  return quizzes[index];
+export async function updateQuiz(id: string, patch: Partial<Quiz>): Promise<Quiz> {
+  const existing = await getQuizById(id);
+  return { ...existing, ...patch };
 }
 
-export async function deleteQuiz(id: string): Promise<void> {
-  await delay();
+export async function deleteQuiz(_id: string): Promise<void> { }
 
-  const quizIndex = quizzes.findIndex((q) => q.id === id);
-  if (quizIndex === -1) {
-    throw new Error('Quiz not found.');
-  }
-
-  quizzes.splice(quizIndex, 1);
-  questions = questions.filter((q) => q.quizId !== id);
-}
-
-export async function publishQuiz(
-  id: string,
-  published: boolean,
-): Promise<Quiz> {
-  await delay();
+export async function publishQuiz(id: string, published: boolean): Promise<Quiz> {
   return updateQuiz(id, { status: published ? 'published' : 'draft' });
 }
 
-export async function addQuestionToQuiz(
-  quizId: string,
-  question: Omit<Question, 'id' | 'quizId'>,
-): Promise<Question> {
-  await delay();
-
-  const quiz = quizzes.find((q) => q.id === quizId);
-  if (!quiz) {
-    throw new Error('Quiz not found.');
-  }
-
-  const newQuestion: Question = {
-    id: newId(`${quizId}-q`),
-    quizId,
-    text: question.text,
-    options: question.options,
-    correctOption: question.correctOption,
-    explanation: question.explanation,
-  };
-
-  questions.push(newQuestion);
-
-  const updatedQuestionCount = questions.filter((q) => q.quizId === quizId).length;
-  quiz.questionCount = updatedQuestionCount;
-
-  return newQuestion;
+export async function addQuestionToQuiz(_quizId: string, _question: any): Promise<Question> {
+  throw new Error('Not implemented');
 }
 
-export async function updateQuestion(
-  _quizId: string,
-  qId: string,
-  patch: Partial<Question>,
-): Promise<Question> {
-  await delay();
-
-  const index = questions.findIndex((q) => q.id === qId);
-  if (index === -1) {
-    throw new Error('Question not found.');
-  }
-
-  questions[index] = {
-    ...questions[index],
-    ...patch,
-    id: questions[index].id,
-    quizId: questions[index].quizId,
-  };
-
-  return questions[index];
+export async function updateQuestion(_quizId: string, _qId: string, _patch: any): Promise<Question> {
+  throw new Error('Not implemented');
 }
 
-export async function deleteQuestion(
-  quizId: string,
-  qId: string,
-): Promise<void> {
-  await delay();
-
-  const index = questions.findIndex((q) => q.id === qId);
-  if (index === -1) {
-    throw new Error('Question not found.');
-  }
-
-  questions.splice(index, 1);
-
-  const quiz = quizzes.find((q) => q.id === quizId);
-  if (quiz) {
-    quiz.questionCount = questions.filter((q) => q.quizId === quizId).length;
-  }
-}
-
-export async function getAllResults(): Promise<QuizAttempt[]> {
-  await delay();
-  return [...quizAttempts].sort(
-    (a, b) =>
-      new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime(),
-  );
-}
-
-export async function getAdminDashboardStats(): Promise<AdminDashboardStats> {
-  await delay();
-
-  const totalQuizzes = quizzes.length;
-  const publishedQuizzes = quizzes.filter((q) => q.status === 'published').length;
-  const totalAttempts = quizAttempts.length;
-
-  const completedAttempts = quizAttempts.filter(
-    (a) => a.status === 'completed',
-  );
-  const avgScore =
-    completedAttempts.length > 0
-      ? Math.round(
-          (completedAttempts.reduce((sum, a) => sum + a.percentage, 0) /
-            completedAttempts.length) *
-            10,
-        ) / 10
-      : 0;
-
-  const activityMap = new Map<
-    string,
-    { quizId: string; quizTitle: string; attempts: number; totalScore: number }
-  >();
-
-  for (const attempt of quizAttempts) {
-    const quiz = quizzes.find((q) => q.id === attempt.quizId);
-    if (!quiz) continue;
-    const entry = activityMap.get(quiz.id) ?? {
-      quizId: quiz.id,
-      quizTitle: quiz.title,
-      attempts: 0,
-      totalScore: 0,
-    };
-    entry.attempts += 1;
-    entry.totalScore += attempt.percentage;
-    activityMap.set(quiz.id, entry);
-  }
-
-  const recentActivity = Array.from(activityMap.values())
-    .map((entry) => ({
-      quizId: entry.quizId,
-      quizTitle: entry.quizTitle,
-      attempts: entry.attempts,
-      avgScore:
-        entry.attempts > 0
-          ? Math.round((entry.totalScore / entry.attempts) * 10) / 10
-          : 0,
-    }))
-    .sort((a, b) => b.attempts - a.attempts)
-    .slice(0, 5);
-
-  const now = new Date();
-  const weeklyAttempts: number[] = [];
-  for (let i = 6; i >= 0; i--) {
-    const dayStart = new Date(now);
-    dayStart.setDate(dayStart.getDate() - i);
-    dayStart.setHours(0, 0, 0, 0);
-    const dayEnd = new Date(dayStart);
-    dayEnd.setDate(dayEnd.getDate() + 1);
-
-    const count = quizAttempts.filter((a) => {
-      const submitted = new Date(a.submittedAt);
-      return submitted >= dayStart && submitted < dayEnd;
-    }).length;
-    weeklyAttempts.push(count);
-  }
-
-  return {
-    totalQuizzes,
-    publishedQuizzes,
-    totalAttempts,
-    avgScore,
-    recentActivity,
-    weeklyAttempts,
-  };
-}
+export async function deleteQuestion(_quizId: string, _qId: string): Promise<void> { }
