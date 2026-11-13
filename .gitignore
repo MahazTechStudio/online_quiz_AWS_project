@@ -33,3 +33,6 @@ dist-ssr
 
 # Trae
 .trae/
+
+# AWS backups (contains account/API identifiers - keep local only)
+aws-backups/

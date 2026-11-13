@@ -191,25 +191,18 @@ const AdminQuizEditor = () => {
 
   const saveQuizInstance = async (desiredStatus?: QuizStatus) => {
     const patch = buildQuizPatch(desiredStatus);
-    if (isNew || !savedQuiz) {
-      const created = await api.createQuiz(patch);
-      for (const q of questions) {
-        await api.addQuestionToQuiz(created.id, {
-          text: q.text,
-          options: q.options,
-          correctOption: q.correctOption,
-          explanation: q.explanation,
-        });
-      }
-      setSavedQuiz(created);
-      return created;
-    } else {
-      const updated = await api.updateQuiz(savedQuiz.id, patch);
-      return updated;
-    }
+    const quizPayload = {
+      ...patch,
+      id: isNew ? undefined : savedQuiz?.id,
+      questions,
+    };
+    const saved = await api.createQuiz(quizPayload);
+    setSavedQuiz(saved);
+    return saved;
   };
 
   const handleSaveDraftConfirm = async () => {
+    if (saveDraftLoading) return;
     setSaveDraftLoading(true);
     setError(null);
     try {
@@ -223,9 +216,9 @@ const AdminQuizEditor = () => {
         throw new Error('Please fill in all required fields before saving.');
       }
       setValidation({});
-      await saveQuizInstance();
+      await saveQuizInstance('draft');
       setUnsavedChanges(false);
-      setSuccessToast('Quiz saved.');
+      setSuccessToast('Quiz saved as draft.');
       setSaveDraftOpen(false);
       setTimeout(() => navigate(navBackTarget), 500);
     } catch (err) {
@@ -237,6 +230,7 @@ const AdminQuizEditor = () => {
   };
 
   const handlePublishConfirm = async () => {
+    if (publishLoading) return;
     setPublishLoading(true);
     setError(null);
     try {
@@ -331,37 +325,20 @@ const AdminQuizEditor = () => {
       };
 
       if (editing.isNew) {
-        if (savedQuiz) {
-          const created = await api.addQuestionToQuiz(savedQuiz.id, questionPayload);
-          setQuestions((prev) => [...prev, created]);
-        } else {
-          const temp: Question = {
-            id: `temp-${Date.now()}`,
-            quizId: 'temp',
-            ...questionPayload,
-            explanation: questionPayload.explanation,
-          };
-          setQuestions((prev) => [...prev, temp]);
-        }
+        const newQ: Question = {
+          id: `q-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+          quizId: savedQuiz?.id || 'new',
+          ...questionPayload,
+        };
+        setQuestions((prev) => [...prev, newQ]);
       } else if (editing.question) {
-        if (savedQuiz) {
-          await api.updateQuestion(savedQuiz.id, editing.question.id, questionPayload);
-          setQuestions((prev) =>
-            prev.map((q) =>
-              q.id === editing.question!.id
-                ? { ...q, ...questionPayload, explanation: questionPayload.explanation }
-                : q
-            )
-          );
-        } else {
-          setQuestions((prev) =>
-            prev.map((q) =>
-              q.id === editing.question!.id
-                ? { ...q, ...questionPayload, explanation: questionPayload.explanation }
-                : q
-            )
-          );
-        }
+        setQuestions((prev) =>
+          prev.map((q) =>
+            q.id === editing.question!.id
+              ? { ...q, ...questionPayload }
+              : q
+          )
+        );
       }
       closeQuestionEditor();
     } catch (err) {
@@ -391,9 +368,6 @@ const AdminQuizEditor = () => {
     if (!deleteQTarget) return;
     setDeleteQLoading(true);
     try {
-      if (savedQuiz) {
-        await api.deleteQuestion(savedQuiz.id, deleteQTarget.id);
-      }
       setQuestions((prev) => prev.filter((q) => q.id !== deleteQTarget.id));
       setDeleteQOpen(false);
       setDeleteQTarget(null);
@@ -662,12 +636,14 @@ const AdminQuizEditor = () => {
         <div className="flex flex-col sm:flex-row gap-3">
           <Button
             variant="secondary"
+            disabled={saveDraftLoading || publishLoading}
             onClick={() => setSaveDraftOpen(true)}
           >
             Save Draft
           </Button>
           <Button
             variant="primary"
+            disabled={publishLoading || saveDraftLoading}
             onClick={() => {
               const { errors } = validateQuizForm(true);
               setPublishErrors(Object.keys(errors).length > 0 ? Object.values(errors) : null);
